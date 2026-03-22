@@ -3,8 +3,8 @@
 
 // Identifiants du réseau WiFi
 // Remplace par ton SSID et mot de passe
-const char* ssid     = "TON_SSID";
-const char* password = "TON_MOT_DE_PASSE";
+const char *ssid = "YOUR_SSID";
+const char *password = "YOUR_PASSWORD";
 
 void setup()
 {
@@ -35,7 +35,16 @@ void setup()
   Serial.println(WiFi.localIP());
 }
 
+unsigned long lastPrint = 0; // Timestamp du dernier affichage
+
 void loop()
 {
-  // Rien à faire en boucle, la connexion est gérée par le système
+  // Réutilisation du pattern millis() : affiche l'IP toutes les 5 secondes sans bloquer
+  unsigned long maintenant = millis();
+  if (maintenant - lastPrint >= 5000)
+  {
+    lastPrint = maintenant;
+    Serial.print("Adresse IP : ");
+    Serial.println(WiFi.localIP());
+  }
 }
