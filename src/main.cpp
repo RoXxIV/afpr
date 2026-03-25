@@ -58,9 +58,9 @@ bool otaActive = false;
 bool otaInProgress = false;
 unsigned long otaStartTime = 0;
 bool btnPrev = HIGH;
-unsigned long lastMqttRetry = 0;
 #define BTN_GRN 16
 #define MQTT_RETRY_MS 5000UL
+unsigned long lastMqttRetry = (unsigned long)-MQTT_RETRY_MS;
 
 void startOTA();
 void stopOTA();
@@ -274,11 +274,12 @@ void setup()
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED)
         delay(500);
+    WiFi.setSleep(false);
     Serial.println("WiFi connecté – IP : " + WiFi.localIP().toString());
 
     mqtt.setServer(mqttBroker, mqttPort);
     mqtt.setCallback(callback);
-    connectMQTT(0);
+    connectMQTT(millis());
 
     showVersion();
     Serial.println("Firmware v" VERSION " démarré — en écoute sur " TOPIC_OTA_CMD);
