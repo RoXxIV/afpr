@@ -142,7 +142,11 @@ void loop()
     if (!mqtt.connected())
         connectMQTT();
 
-    // mqtt.loop() : traite les messages entrants et maintient la connexion active
+    // mqtt.loop() : méthode de l'objet PubSubClient (la lib knolleary/PubSubClient)
+    // Elle doit être appelée à chaque tour de loop() — c'est elle qui :
+    //   → reçoit et dispatche les messages entrants (callback)
+    //   → envoie les pings keepalive au broker pour maintenir la connexion
+    // Sans cet appel, l'ESP32 ne reçoit rien et se déconnecte rapidement
     // DOIT être appelé à chaque tour de boucle, sinon le broker déconnecte le client
     mqtt.loop();
 }
