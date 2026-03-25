@@ -4,8 +4,8 @@
 #include <LiquidCrystal_I2C.h>
 
 // --- WiFi ---
-const char *ssid = "YOUR_WIFI_SSID";
-const char *password = "Your_WIFI_password";
+const char *ssid = "YourSSID";
+const char *password = "YourPassword";
 
 // --- Version du firmware ---
 // Modifie cette valeur ("1.0" → "1.1" par exemple), compile et uploade en OTA.
@@ -45,6 +45,7 @@ void setup()
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED)
         delay(500);
+    WiFi.setSleep(false); // Désactive la veille WiFi — indispensable pour OTA sans coupure
 
     Serial.println("WiFi connecté – IP : " + WiFi.localIP().toString());
 
