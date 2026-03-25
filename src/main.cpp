@@ -43,8 +43,8 @@ WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 
 // Reconnexion non-bloquante : timestamp du dernier essai
-unsigned long lastMqttRetry = 0;
 #define MQTT_RETRY_MS 5000 // essai toutes les 5s max
+unsigned long lastMqttRetry = (unsigned long)-MQTT_RETRY_MS;
 
 // ---------------------------------------------------------------------------
 // publishLed() : publie l'état d'une LED sur son topic MQTT
@@ -149,6 +149,7 @@ void setup()
         delay(500);
         Serial.print(".");
     }
+    WiFi.setSleep(false);
     Serial.println();
     Serial.print("WiFi connecté – IP : ");
     Serial.println(WiFi.localIP());
@@ -156,7 +157,7 @@ void setup()
     mqtt.setServer(mqttBroker, mqttPort);
     mqtt.setCallback(callback);
     mqtt.setKeepAlive(60); // Délai keepalive : 60s (défaut 15s, trop court sur réseau instable)
-    connectMQTT(0);
+    connectMQTT(millis());
 }
 
 // ---------------------------------------------------------------------------
