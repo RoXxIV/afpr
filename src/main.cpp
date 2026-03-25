@@ -58,8 +58,8 @@ bool btnRedPrev = HIGH;
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 
-unsigned long lastMqttRetry = 0;
 #define MQTT_RETRY_MS 5000
+unsigned long lastMqttRetry = (unsigned long)-MQTT_RETRY_MS;
 
 // ---------------------------------------------------------------------------
 // publishEtat() : publie l'état courant sur test/etat
@@ -244,6 +244,7 @@ void setup()
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED)
         delay(500);
+    WiFi.setSleep(false);
 
     lcd.setCursor(0, 1);
     lcd.print("Appui btn vert ");
@@ -251,7 +252,7 @@ void setup()
     mqtt.setServer(mqttBroker, mqttPort);
     mqtt.setCallback(callback);
     mqtt.setKeepAlive(60);
-    connectMQTT(0);
+    connectMQTT(millis());
 }
 
 // ---------------------------------------------------------------------------
