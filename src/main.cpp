@@ -1,100 +1,79 @@
-// Module 5 - Step 7 : NVS — Stockage persistant
+// Module 5 - Step 8 : Multi-fichier C++
 //
-// Jusqu'ici toutes tes variables sont en RAM → perdues à chaque reboot.
-// Le NVS (Non-Volatile Storage) est une zone de la flash de l'ESP32
-// qui SURVIT aux redémarrages, coupures de courant, et mises à jour OTA.
+// Jusqu'ici tout le code tenait dans main.cpp.
+// Sur un vrai projet, c'est ingérable : 500, 1000, 2000 lignes dans un seul fichier.
 //
-// C'est ce qu'on utilise dans le vrai projet pour stocker la config des
-// bancs (seuils, calibration...) — sans NVS, tout serait perdu à chaque
-// coupure de courant sur le terrain.
+// La solution : découper en modules indépendants, chacun dans son propre dossier.
+// C'est exactement l'architecture du vrai projet :
 //
-// L'API "Preferences" est le wrapper Arduino autour du NVS brut de l'ESP-IDF.
-// Elle organise les données en "namespaces" (comme des tiroirs) et en clés/valeurs.
+//   lib/DisplayManager/DisplayManager.h + .cpp
+//   lib/MenuManager/MenuManager.h + .cpp
+//   lib/BatteryLogic/BatteryLogic.h + .cpp
+//   ...
 //
-// Ce step démontre la persistance EN DEUX TEMPS :
-//   1. Observe le compteur de démarrages s'incrémenter à chaque reboot
-//   2. Maintiens le bouton rouge au démarrage → factory reset (remet à zéro)
+// Ce step crée un premier module : LedManager
+//   lib/LedManager/LedManager.h   → déclaration (quoi)
+//   lib/LedManager/LedManager.cpp → implémentation (comment)
+//
+// PlatformIO découvre automatiquement les fichiers dans lib/ — pas de config à faire.
+//
+// Ouvre lib/LedManager/LedManager.h et LedManager.cpp avant de lire ce fichier.
 
 #include <Arduino.h>
-#include <Preferences.h>  // Wrapper Arduino pour le NVS — intégré au framework ESP32
+#include <LedManager.h>  // PlatformIO cherche dans lib/ automatiquement
 
-#define BTN_RED 18
+#define BTN_GRN 16
+#define BTN_YLW 19
 
-Preferences prefs;
+// Instanciation : crée un objet LedManager pour chaque LED
+// On passe le GPIO au constructeur — comme new LedManager(pin) en JS
+LedManager ledVerte(2);
+LedManager ledJaune(4);
 
-// ---------------------------------------------------------------------------
-// setup()
-// ---------------------------------------------------------------------------
+bool btnGrnPrev = HIGH;
+bool btnYlwPrev = HIGH;
+
 void setup()
 {
   Serial.begin(115200);
-  pinMode(BTN_RED, INPUT_PULLUP);
+  pinMode(BTN_GRN, INPUT_PULLUP);
+  pinMode(BTN_YLW, INPUT_PULLUP);
 
-  // open() ouvre un namespace NVS — comme un tiroir nommé
-  // Paramètres :
-  //   nom du namespace → chaîne courte, max 15 caractères
-  //   readOnly         → false = lecture + écriture
-  //
-  // Tous les get/put qui suivent opèrent dans ce namespace
-  prefs.begin("config", false);
+  // begin() initialise le GPIO — séparé du constructeur car pinMode()
+  // ne peut pas être appelé avant que le framework Arduino soit initialisé
+  ledVerte.begin();
+  ledJaune.begin();
 
-  // --- Factory reset ---
-  // Si le bouton rouge est maintenu AU DÉMARRAGE → efface tout le namespace
-  // Pattern classique sur les devices terrain pour récupérer une config corrompue
-  if (digitalRead(BTN_RED) == LOW)
-  {
-    prefs.clear(); // Efface toutes les clés du namespace "config"
-    Serial.println(">>> FACTORY RESET — toutes les valeurs effacées <<<");
-  }
+  // Clignote 3 fois au démarrage pour signaler que tout est prêt
+  ledVerte.blink(3, 100);
 
-  // --- Compteur de démarrages ---
-  // getInt("clé", valeur_par_defaut) :
-  //   → si la clé existe dans le NVS : retourne la valeur stockée
-  //   → si la clé n'existe pas (premier démarrage) : retourne la valeur par défaut
-  int nbDemarrages = prefs.getInt("boots", 0);
-  nbDemarrages++;
-  prefs.putInt("boots", nbDemarrages); // Sauvegarde immédiatement en flash
-
-  Serial.println("==================================");
-  Serial.print("Nombre de démarrages : ");
-  Serial.println(nbDemarrages);
-  Serial.println("(reboot et observe que le compteur s'incrémente)");
-  Serial.println("(maintiens BTN rouge au démarrage pour reset à 0)");
-
-  // --- Config persistante ---
-  // Simule le stockage d'une config device — survit aux reboots et aux OTA
-  // Dans le vrai projet : seuils de tension, offsets de calibration...
-  String nomDevice = prefs.getString("nom", "device_defaut");
-  int    seuil     = prefs.getInt("seuil", 80);
-
-  Serial.print("Nom device : ");
-  Serial.println(nomDevice);
-  Serial.print("Seuil SOC  : ");
-  Serial.print(seuil);
-  Serial.println("%");
-  Serial.println("==================================");
-
-  // Sauvegarde de nouvelles valeurs si c'est le premier démarrage
-  // (les putX n'écrasent que si la valeur change — économise les cycles flash)
-  if (nomDevice == "device_defaut")
-  {
-    prefs.putString("nom",   "esp32-prod-01");
-    prefs.putInt   ("seuil", 80);
-    Serial.println("Config initiale sauvegardée — reboot pour la voir chargée.");
-  }
-
-  // end() ferme le namespace et libère les ressources
-  // Bonne pratique : toujours fermer après utilisation
-  prefs.end();
+  Serial.println("LedManager prêt !");
+  Serial.println("BTN VERT  → toggle LED verte");
+  Serial.println("BTN JAUNE → toggle LED jaune + état dans Serial");
 }
 
-// ---------------------------------------------------------------------------
-// loop()
-// ---------------------------------------------------------------------------
 void loop()
 {
-  // NVS n'est pas utilisé en continu — on ouvre, lit/écrit, ferme.
-  // Si tu dois mettre à jour une valeur régulièrement (ex: SOC toutes les minutes),
-  // ouvre et ferme à chaque fois pour éviter la corruption en cas de coupure.
-  delay(1000);
+  bool btnGrn = digitalRead(BTN_GRN);
+  bool btnYlw = digitalRead(BTN_YLW);
+
+  if (btnGrnPrev == HIGH && btnGrn == LOW)
+  {
+    ledVerte.toggle();
+    delay(50);
+  }
+
+  if (btnYlwPrev == HIGH && btnYlw == LOW)
+  {
+    ledJaune.toggle();
+
+    // isOn() : accès à l'état sans toucher directement à la variable interne
+    // → c'est l'encapsulation — main.cpp ne connaît pas _state, il demande à l'objet
+    Serial.print("LED jaune : ");
+    Serial.println(ledJaune.isOn() ? "ON" : "OFF");
+    delay(50);
+  }
+
+  btnGrnPrev = btnGrn;
+  btnYlwPrev = btnYlw;
 }
