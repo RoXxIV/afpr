@@ -1,118 +1,113 @@
-// Module 5 - Step 2 : Task Watchdog — le filet de sécurité matériel
+// Module 5 - Step 3 : FreeRTOS — Les tâches (Tasks)
 //
-// Au step-1, c'était TOI qui décidais de redémarrer avec ESP.restart().
-// Ici c'est l'inverse : tu délègues la surveillance au hardware.
+// Jusqu'ici tout ton code tournait dans une seule loop() séquentielle :
+// une chose à la fois, dans l'ordre.
 //
-// Principe du watchdog :
-//   → Tu enregistres ta tâche auprès du watchdog
-//   → Tu dois appeler esp_task_wdt_reset() régulièrement ("nourrir le chien")
-//   → Si tu ne le fais pas dans le délai imparti (ex: code bloqué, boucle infinie)
-//     le watchdog reset l'ESP32 tout seul, sans que ton code intervienne
+// FreeRTOS introduit le multitâche : plusieurs blocs de code qui tournent
+// "en parallèle" sur l'ESP32. C'est comme des workers indépendants,
+// chacun avec sa propre boucle et son propre rythme.
 //
-// C'est le filet ultime : il protège contre les situations où ton code
-// ne peut PLUS décider de redémarrer lui-même.
+// Analogie web : pense à des async workers — chaque tâche est un worker
+// qui tourne en fond sans bloquer les autres.
 //
-// Ce step simule deux scénarios :
-//   Bouton VERT  → tout va bien, le watchdog est nourri normalement
-//   Bouton ROUGE → simule un freeze (delay bloquant) → watchdog se déclenche
-//                  Au reboot : esp_reset_reason() retourne ESP_RST_TASK_WDT
+// Ce step crée 3 tâches indépendantes :
+//   → Tâche 1 : clignote la LED verte toutes les 500ms
+//   → Tâche 2 : clignote la LED rouge toutes les 1200ms (rythme différent)
+//   → Tâche 3 : affiche un compteur sur Serial toutes les 2s
+//
+// Observe dans le Serial Monitor que les 3 rythmes sont bien indépendants —
+// aucune tâche ne bloque les autres, même avec vTaskDelay().
 
 #include <Arduino.h>
-#include <esp_task_wdt.h>  // API watchdog de l'ESP32 (intégrée au framework)
 
-#define BTN_GRN 16  // Nourrit le watchdog manuellement (mode nominal)
-#define BTN_RED 18  // Simule un freeze → déclenche le watchdog
-
-#define WDT_TIMEOUT_S 5  // Le watchdog reset l'ESP si pas nourri pendant 5 secondes
+#define LED_GRN 2
+#define LED_RED 5
 
 // ---------------------------------------------------------------------------
-// resetReasonToString() : repris du step-1
-// Tu vas maintenant voir ESP_RST_TASK_WDT apparaître après un freeze
+// tacheLedVerte() : clignote la LED verte toutes les 500ms
+//
+// Signature imposée par FreeRTOS : retourne void, prend un void* en paramètre
+// Le void* permet de passer des données à la tâche à sa création (on verra ça plus tard)
 // ---------------------------------------------------------------------------
-const char *resetReasonToString(esp_reset_reason_t reason)
+void tacheLedVerte(void *param)
 {
-  switch (reason)
+  pinMode(LED_GRN, OUTPUT);
+
+  // Les tâches FreeRTOS ont leur propre boucle infinie
+  // Elles ne passent JAMAIS par loop()
+  while (true)
   {
-    case ESP_RST_POWERON:  return "Mise sous tension";
-    case ESP_RST_SW:       return "Reset logiciel (ESP.restart)";
-    case ESP_RST_PANIC:    return "Panic / crash";
-    case ESP_RST_INT_WDT:  return "Watchdog interruption";
-    case ESP_RST_TASK_WDT: return "Watchdog tâche ← c'est ici !";  // Ce step !
-    case ESP_RST_WDT:      return "Watchdog autre";
-    default:               return "Autre";
+    digitalWrite(LED_GRN, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(500)); // vTaskDelay = delay() non bloquant pour FreeRTOS
+                                    // pdMS_TO_TICKS convertit des ms en "ticks" FreeRTOS
+    digitalWrite(LED_GRN, LOW);
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
 // ---------------------------------------------------------------------------
-// setup()
+// tacheLedRouge() : clignote la LED rouge toutes les 1200ms
+// ---------------------------------------------------------------------------
+void tacheLedRouge(void *param)
+{
+  pinMode(LED_RED, OUTPUT);
+
+  while (true)
+  {
+    digitalWrite(LED_RED, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(1200));
+    digitalWrite(LED_RED, LOW);
+    vTaskDelay(pdMS_TO_TICKS(1200));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// tacheSerial() : affiche un compteur toutes les 2 secondes
+// ---------------------------------------------------------------------------
+void tacheSerial(void *param)
+{
+  int compteur = 0;
+
+  while (true)
+  {
+    Serial.print("Tâche Serial — tick : ");
+    Serial.println(compteur++);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// setup() : crée les tâches — elles démarrent immédiatement
+// loop() ne sera presque plus utilisée dans un projet FreeRTOS
 // ---------------------------------------------------------------------------
 void setup()
 {
   Serial.begin(115200);
-  pinMode(BTN_GRN, INPUT_PULLUP);
-  pinMode(BTN_RED, INPUT_PULLUP);
 
-  // Affiche la raison du dernier démarrage — si le watchdog s'est déclenché
-  // tu verras "Watchdog tâche ← c'est ici !" au reboot
-  esp_reset_reason_t reason = esp_reset_reason();
-  Serial.println("==================================");
-  Serial.print("Raison du dernier reset : ");
-  Serial.println(resetReasonToString(reason));
-  Serial.println("==================================");
-
-  // --- Initialisation du watchdog ---
+  // xTaskCreatePinnedToCore() crée une tâche et la fixe sur un cœur CPU
   //
-  // esp_task_wdt_config_t définit le comportement du watchdog :
-  //   timeout_ms   → délai avant reset si le chien n'est pas nourri
-  //   trigger_panic → true = génère un panic avant le reset (plus de logs)
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms     = WDT_TIMEOUT_S * 1000,
-    .idle_core_mask = 0,
-    .trigger_panic  = false  // false = reset direct, true = panic + stack trace
-  };
-  esp_task_wdt_reconfigure(&wdt_config);
+  // Paramètres :
+  //   fonction        → le code de la tâche
+  //   nom             → pour le debug (affiché dans les outils FreeRTOS)
+  //   stack (bytes)   → mémoire allouée à la tâche (augmenter si crash "stack overflow")
+  //   param           → données passées à la tâche (NULL ici, on verra plus tard)
+  //   priorité        → 1 = basse, 5 = haute (0 réservé à idle)
+  //   handle          → pointeur pour contrôler la tâche plus tard (NULL si pas besoin)
+  //   cœur            → 0 ou 1 (l'ESP32 a 2 cœurs)
 
-  // Enregistre la tâche courante (loop) auprès du watchdog
-  // À partir de maintenant, cette tâche DOIT appeler esp_task_wdt_reset()
-  // toutes les WDT_TIMEOUT_S secondes, sinon → reset
-  esp_task_wdt_add(NULL); // NULL = tâche courante (loop)
+  xTaskCreatePinnedToCore(tacheLedVerte,  "LED Verte",  1024, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(tacheLedRouge,  "LED Rouge",  1024, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(tacheSerial,    "Serial",     2048, NULL, 1, NULL, 1);
+  // Stack plus grande pour tacheSerial car Serial.print() consomme plus de mémoire
 
-  Serial.println("Watchdog actif — timeout : " + String(WDT_TIMEOUT_S) + "s");
-  Serial.println("BTN VERT  → nourrit le watchdog");
-  Serial.println("BTN ROUGE → simule un freeze (watchdog se déclenche dans " + String(WDT_TIMEOUT_S) + "s)");
+  Serial.println("3 tâches créées — observe les rythmes indépendants !");
 }
 
 // ---------------------------------------------------------------------------
-// loop()
+// loop() : vide — les tâches FreeRTOS prennent le relais
+// On garde quand même vTaskDelay pour ne pas monopoliser le CPU
 // ---------------------------------------------------------------------------
 void loop()
 {
-  // --- Nourrir le watchdog ---
-  // Dans un vrai projet, cet appel est placé dans la boucle principale.
-  // Si la boucle tourne normalement, le chien est nourri et rien ne se passe.
-  // Si elle se bloque, le chien n'est plus nourri → reset.
-  esp_task_wdt_reset();
-
-  Serial.println("Watchdog nourri — système OK");
-
-  // BTN ROUGE : simule un freeze avec un delay bloquant
-  // Le watchdog ne sera plus nourri → reset au bout de WDT_TIMEOUT_S secondes
-  if (digitalRead(BTN_RED) == LOW)
-  {
-    Serial.println("FREEZE simulé ! Watchdog déclenché dans " + String(WDT_TIMEOUT_S) + "s...");
-    Serial.flush();
-    delay(WDT_TIMEOUT_S * 1000 + 1000); // Bloque volontairement au-delà du timeout
-    // Cette ligne ne sera jamais atteinte — le watchdog reset avant
-    Serial.println("(jamais affiché)");
-  }
-
-  // BTN VERT : nourrit manuellement le watchdog et affiche un message
-  // → permet de tester que le watchdog ne se déclenche PAS quand tout va bien
-  if (digitalRead(BTN_GRN) == LOW)
-  {
-    Serial.println("Bouton vert pressé — watchdog nourri manuellement");
-    delay(50); // anti-rebond (court, dans le délai du watchdog)
-  }
-
-  delay(1000); // Simule une boucle qui prend 1s — bien en dessous du timeout de 5s
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }
