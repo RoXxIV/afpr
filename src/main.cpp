@@ -1,112 +1,150 @@
-// Module 5 - Step 3 : FreeRTOS — Les tâches (Tasks)
+// Module 5 - Step 4 : FreeRTOS — Les Queues
 //
-// Jusqu'ici tout ton code tournait dans une seule loop() séquentielle :
-// une chose à la fois, dans l'ordre.
+// Au step-3, les tâches tournaient en parallèle mais de façon isolée.
+// Comment une tâche envoie-t-elle une information à une autre ?
 //
-// FreeRTOS introduit le multitâche : plusieurs blocs de code qui tournent
-// "en parallèle" sur l'ESP32. C'est comme des workers indépendants,
-// chacun avec sa propre boucle et son propre rythme.
+// Mauvaise idée : partager une variable globale directement.
+//   → Risque de "race condition" : deux tâches lisent/écrivent en même temps
+//   → On verra comment protéger ça au step-5 (Mutex)
 //
-// Analogie web : pense à des async workers — chaque tâche est un worker
-// qui tourne en fond sans bloquer les autres.
+// Bonne idée : utiliser une Queue (file d'attente).
+//   → La tâche A ENVOIE un message dans la queue
+//   → La tâche B REÇOIT le message quand elle est prête
+//   → FreeRTOS garantit que c'est thread-safe
 //
-// Ce step crée 3 tâches indépendantes :
-//   → Tâche 1 : clignote la LED verte toutes les 500ms
-//   → Tâche 2 : clignote la LED rouge toutes les 1200ms (rythme différent)
-//   → Tâche 3 : affiche un compteur sur Serial toutes les 2s
+// Analogie web : c'est exactement un EventEmitter ou un message bus —
+// les tâches ne se connaissent pas, elles parlent via un canal partagé.
 //
-// Observe dans le Serial Monitor que les 3 rythmes sont bien indépendants —
-// aucune tâche ne bloque les autres, même avec vTaskDelay().
+// Ce step simule un pipeline simple :
+//   Tâche Bouton  → détecte un appui → envoie l'événement dans la queue
+//   Tâche LED     → reçoit l'événement → allume/éteint la LED
 
 #include <Arduino.h>
 
+#define BTN_GRN 16
+#define BTN_YLW 19
 #define LED_GRN 2
-#define LED_RED 5
+#define LED_YLW 4
+
+// --- Types de messages échangés via la queue ---
+// Un enum rend le code lisible : on envoie un EVENT, pas un int brut
+typedef enum {
+  EVT_BTN_GRN,  // bouton vert pressé
+  EVT_BTN_YLW,  // bouton jaune pressé
+} BoutonEvent;
+
+// --- Handle de la queue ---
+// QueueHandle_t est le "pointeur" vers la queue — partagé entre les tâches
+// Déclaré global pour être accessible par toutes les tâches
+QueueHandle_t queueBoutons;
 
 // ---------------------------------------------------------------------------
-// tacheLedVerte() : clignote la LED verte toutes les 500ms
-//
-// Signature imposée par FreeRTOS : retourne void, prend un void* en paramètre
-// Le void* permet de passer des données à la tâche à sa création (on verra ça plus tard)
+// tacheBoutons() : surveille les boutons et envoie des événements
+// Producteur — ne sait pas ce qui consomme la queue
 // ---------------------------------------------------------------------------
-void tacheLedVerte(void *param)
+void tacheBoutons(void *param)
+{
+  pinMode(BTN_GRN, INPUT_PULLUP);
+  pinMode(BTN_YLW, INPUT_PULLUP);
+
+  bool prevGrn = HIGH;
+  bool prevYlw = HIGH;
+
+  while (true)
+  {
+    bool curGrn = digitalRead(BTN_GRN);
+    bool curYlw = digitalRead(BTN_YLW);
+
+    // Front descendant bouton vert → envoie l'événement dans la queue
+    if (prevGrn == HIGH && curGrn == LOW)
+    {
+      BoutonEvent evt = EVT_BTN_GRN;
+
+      // xQueueSend() place le message dans la queue
+      // pdMS_TO_TICKS(0) = n'attend pas si la queue est pleine (non bloquant)
+      // Si la queue est pleine, le message est perdu — acceptable pour des boutons
+      xQueueSend(queueBoutons, &evt, pdMS_TO_TICKS(0));
+    }
+
+    if (prevYlw == HIGH && curYlw == LOW)
+    {
+      BoutonEvent evt = EVT_BTN_YLW;
+      xQueueSend(queueBoutons, &evt, pdMS_TO_TICKS(0));
+    }
+
+    prevGrn = curGrn;
+    prevYlw = curYlw;
+
+    vTaskDelay(pdMS_TO_TICKS(20)); // Anti-rebond via délai court
+  }
+}
+
+// ---------------------------------------------------------------------------
+// tacheLeds() : reçoit les événements et pilote les LEDs
+// Consommateur — ne sait pas qui produit dans la queue
+// ---------------------------------------------------------------------------
+void tacheLeds(void *param)
 {
   pinMode(LED_GRN, OUTPUT);
+  pinMode(LED_YLW, OUTPUT);
 
-  // Les tâches FreeRTOS ont leur propre boucle infinie
-  // Elles ne passent JAMAIS par loop()
+  bool etatGrn = false;
+  bool etatYlw = false;
+
+  BoutonEvent evt;
+
   while (true)
   {
-    digitalWrite(LED_GRN, HIGH);
-    vTaskDelay(pdMS_TO_TICKS(500)); // vTaskDelay = delay() non bloquant pour FreeRTOS
-                                    // pdMS_TO_TICKS convertit des ms en "ticks" FreeRTOS
-    digitalWrite(LED_GRN, LOW);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // xQueueReceive() attend qu'un message arrive dans la queue
+    // portMAX_DELAY = attend indéfiniment (la tâche dort jusqu'à réception)
+    // → pas de CPU consommé pendant l'attente, contrairement à un polling
+    if (xQueueReceive(queueBoutons, &evt, portMAX_DELAY) == pdTRUE)
+    {
+      switch (evt)
+      {
+        case EVT_BTN_GRN:
+          etatGrn = !etatGrn;
+          digitalWrite(LED_GRN, etatGrn);
+          Serial.println(etatGrn ? "LED verte  → ON" : "LED verte  → OFF");
+          break;
+
+        case EVT_BTN_YLW:
+          etatYlw = !etatYlw;
+          digitalWrite(LED_YLW, etatYlw);
+          Serial.println(etatYlw ? "LED jaune  → ON" : "LED jaune  → OFF");
+          break;
+      }
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// tacheLedRouge() : clignote la LED rouge toutes les 1200ms
-// ---------------------------------------------------------------------------
-void tacheLedRouge(void *param)
-{
-  pinMode(LED_RED, OUTPUT);
-
-  while (true)
-  {
-    digitalWrite(LED_RED, HIGH);
-    vTaskDelay(pdMS_TO_TICKS(1200));
-    digitalWrite(LED_RED, LOW);
-    vTaskDelay(pdMS_TO_TICKS(1200));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// tacheSerial() : affiche un compteur toutes les 2 secondes
-// ---------------------------------------------------------------------------
-void tacheSerial(void *param)
-{
-  int compteur = 0;
-
-  while (true)
-  {
-    Serial.print("Tâche Serial — tick : ");
-    Serial.println(compteur++);
-    vTaskDelay(pdMS_TO_TICKS(2000));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// setup() : crée les tâches — elles démarrent immédiatement
-// loop() ne sera presque plus utilisée dans un projet FreeRTOS
+// setup()
 // ---------------------------------------------------------------------------
 void setup()
 {
   Serial.begin(115200);
 
-  // xTaskCreatePinnedToCore() crée une tâche et la fixe sur un cœur CPU
-  //
+  // Crée la queue AVANT de créer les tâches qui vont l'utiliser
   // Paramètres :
-  //   fonction        → le code de la tâche
-  //   nom             → pour le debug (affiché dans les outils FreeRTOS)
-  //   stack (bytes)   → mémoire allouée à la tâche (augmenter si crash "stack overflow")
-  //   param           → données passées à la tâche (NULL ici, on verra plus tard)
-  //   priorité        → 1 = basse, 5 = haute (0 réservé à idle)
-  //   handle          → pointeur pour contrôler la tâche plus tard (NULL si pas besoin)
-  //   cœur            → 0 ou 1 (l'ESP32 a 2 cœurs)
+  //   longueur  → nombre max de messages en attente (ici 10)
+  //   taille    → taille d'un message en bytes (sizeof notre enum)
+  queueBoutons = xQueueCreate(10, sizeof(BoutonEvent));
 
-  xTaskCreatePinnedToCore(tacheLedVerte,  "LED Verte",  1024, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(tacheLedRouge,  "LED Rouge",  1024, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(tacheSerial,    "Serial",     2048, NULL, 1, NULL, 1);
-  // Stack plus grande pour tacheSerial car Serial.print() consomme plus de mémoire
+  if (queueBoutons == NULL)
+  {
+    Serial.println("ERREUR : impossible de créer la queue !");
+    return;
+  }
 
-  Serial.println("3 tâches créées — observe les rythmes indépendants !");
+  xTaskCreatePinnedToCore(tacheBoutons, "Boutons", 2048, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(tacheLeds,    "LEDs",    2048, NULL, 1, NULL, 0);
+  // Boutons a une priorité plus haute (2) que LEDs (1)
+  // → garantit que la détection d'appui n'est jamais retardée par la tâche LED
+
+  Serial.println("Queue créée — appuie sur les boutons !");
 }
 
-// ---------------------------------------------------------------------------
-// loop() : vide — les tâches FreeRTOS prennent le relais
-// On garde quand même vTaskDelay pour ne pas monopoliser le CPU
-// ---------------------------------------------------------------------------
 void loop()
 {
   vTaskDelay(pdMS_TO_TICKS(1000));
