@@ -222,6 +222,7 @@ void stopOTA()
     lcd.print("Reconnexion...");
     while (WiFi.status() != WL_CONNECTED)
         delay(500);
+    WiFi.setSleep(false); // Retour en mode STA → réactiver pour éviter la latence MQTT
     mqtt.setServer(mqttBroker, mqttPort);
     mqtt.setCallback(callback);
     showVersion();
