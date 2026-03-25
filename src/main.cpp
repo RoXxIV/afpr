@@ -8,8 +8,8 @@
 #include <PubSubClient.h>
 
 // --- Identifiants WiFi ---
-const char *ssid = "YOURSSID";
-const char *password = "YOURPASSWORD";
+const char *ssid = "YOUR_SSID";
+const char *password = "YOUR_PASSWORD";
 
 // --- Broker MQTT ---
 const char *mqttBroker = "192.168.1.X";
@@ -49,8 +49,12 @@ unsigned long lastDebounce[NB_LEDS] = {0, 0, 0, 0};
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 
-unsigned long lastMqttRetry = 0;
 #define MQTT_RETRY_MS 5000
+// Initialisé à -MQTT_RETRY_MS pour que le premier appel à connectMQTT()
+// passe immédiatement le guard "now - lastMqttRetry < MQTT_RETRY_MS"
+// Avec unsigned long, (0 - 5000) wrappe à ULONG_MAX - 4999 → valeur très grande
+// → now - lastMqttRetry sera toujours >= MQTT_RETRY_MS au premier appel
+unsigned long lastMqttRetry = (unsigned long)-MQTT_RETRY_MS;
 
 // ---------------------------------------------------------------------------
 // setLed() : applique un état sur une LED
@@ -158,6 +162,10 @@ void setup()
         delay(500);
         Serial.print(".");
     }
+    // Désactive le mode économie d'énergie WiFi
+    // Sans ça, l'ESP32 dort entre les paquets et ne reçoit les messages MQTT
+    // qu'aux intervalles DTIM du routeur → latence de plusieurs secondes
+    WiFi.setSleep(false);
     Serial.println();
     Serial.print("WiFi connecté – IP : ");
     Serial.println(WiFi.localIP());
@@ -165,7 +173,7 @@ void setup()
     mqtt.setServer(mqttBroker, mqttPort);
     mqtt.setCallback(callback);
     mqtt.setKeepAlive(60);
-    connectMQTT(0);
+    connectMQTT(millis()); // Le guard passe immédiatement grâce à l'init de lastMqttRetry
 }
 
 // ---------------------------------------------------------------------------
