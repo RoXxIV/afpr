@@ -1,120 +1,85 @@
-// Module 5 - Step 4 : FreeRTOS — Les Queues
+// Module 5 - Step 5 : FreeRTOS — Mutex
 //
-// Au step-3, les tâches tournaient en parallèle mais de façon isolée.
-// Comment une tâche envoie-t-elle une information à une autre ?
+// Au step-4, les tâches communiquaient via une queue — propre et thread-safe.
+// Mais parfois deux tâches ont besoin d'accéder à la MÊME ressource
+// (un écran LCD, le port Serial, une variable partagée...).
 //
-// Mauvaise idée : partager une variable globale directement.
-//   → Risque de "race condition" : deux tâches lisent/écrivent en même temps
-//   → On verra comment protéger ça au step-5 (Mutex)
+// Problème : si les deux écrivent en même temps → données corrompues.
+// C'est ce qu'on appelle une "race condition".
 //
-// Bonne idée : utiliser une Queue (file d'attente).
-//   → La tâche A ENVOIE un message dans la queue
-//   → La tâche B REÇOIT le message quand elle est prête
-//   → FreeRTOS garantit que c'est thread-safe
+// Analogie web : deux requêtes qui modifient la même ligne en base de données
+// en même temps sans transaction → résultat imprévisible.
 //
-// Analogie web : c'est exactement un EventEmitter ou un message bus —
-// les tâches ne se connaissent pas, elles parlent via un canal partagé.
+// La solution : le Mutex (Mutual Exclusion — exclusion mutuelle).
+//   → Une seule tâche à la fois peut "prendre" le mutex
+//   → Les autres attendent qu'il soit "rendu" avant de continuer
+//   → C'est un verrou sur une ressource partagée
 //
-// Ce step simule un pipeline simple :
-//   Tâche Bouton  → détecte un appui → envoie l'événement dans la queue
-//   Tâche LED     → reçoit l'événement → allume/éteint la LED
+// Ce step démontre le problème EN DEUX TEMPS :
+//   Phase 1 (SANS_MUTEX = 1) : deux tâches écrivent sur Serial en même temps
+//                               → observe le texte mélangé/corrompu
+//   Phase 2 (SANS_MUTEX = 0) : le mutex protège Serial
+//                               → les messages s'affichent proprement
+//
+// Change la valeur de SANS_MUTEX, recompile, et compare.
 
 #include <Arduino.h>
 
-#define BTN_GRN 16
-#define BTN_YLW 19
-#define LED_GRN 2
-#define LED_YLW 4
+// Passe à 0 pour activer la protection par mutex
+#define SANS_MUTEX 1
 
-// --- Types de messages échangés via la queue ---
-// Un enum rend le code lisible : on envoie un EVENT, pas un int brut
-typedef enum {
-  EVT_BTN_GRN,  // bouton vert pressé
-  EVT_BTN_YLW,  // bouton jaune pressé
-} BoutonEvent;
-
-// --- Handle de la queue ---
-// QueueHandle_t est le "pointeur" vers la queue — partagé entre les tâches
-// Déclaré global pour être accessible par toutes les tâches
-QueueHandle_t queueBoutons;
+SemaphoreHandle_t mutexSerial;
 
 // ---------------------------------------------------------------------------
-// tacheBoutons() : surveille les boutons et envoie des événements
-// Producteur — ne sait pas ce qui consomme la queue
+// ecrireSerial() : écrit un message multiligne sur Serial
+// Sans mutex, si deux tâches appellent cette fonction en même temps,
+// leurs sorties vont s'entremêler
 // ---------------------------------------------------------------------------
-void tacheBoutons(void *param)
+void ecrireSerial(const char *nomTache, int compteur)
 {
-  pinMode(BTN_GRN, INPUT_PULLUP);
-  pinMode(BTN_YLW, INPUT_PULLUP);
-
-  bool prevGrn = HIGH;
-  bool prevYlw = HIGH;
-
-  while (true)
+#if SANS_MUTEX == 0
+  // xSemaphoreTake() : demande le verrou
+  // pdMS_TO_TICKS(100) : attend max 100ms — si pas libre → abandonne
+  if (xSemaphoreTake(mutexSerial, pdMS_TO_TICKS(100)) == pdTRUE)
   {
-    bool curGrn = digitalRead(BTN_GRN);
-    bool curYlw = digitalRead(BTN_YLW);
+#endif
 
-    // Front descendant bouton vert → envoie l'événement dans la queue
-    if (prevGrn == HIGH && curGrn == LOW)
-    {
-      BoutonEvent evt = EVT_BTN_GRN;
+    // Bloc critique : une seule tâche à la fois exécute ce code
+    Serial.print("[ ");
+    Serial.print(nomTache);
+    Serial.print(" ] message ");
+    Serial.print(compteur);
+    Serial.print(" — millis: ");
+    Serial.println(millis());
 
-      // xQueueSend() place le message dans la queue
-      // pdMS_TO_TICKS(0) = n'attend pas si la queue est pleine (non bloquant)
-      // Si la queue est pleine, le message est perdu — acceptable pour des boutons
-      xQueueSend(queueBoutons, &evt, pdMS_TO_TICKS(0));
-    }
-
-    if (prevYlw == HIGH && curYlw == LOW)
-    {
-      BoutonEvent evt = EVT_BTN_YLW;
-      xQueueSend(queueBoutons, &evt, pdMS_TO_TICKS(0));
-    }
-
-    prevGrn = curGrn;
-    prevYlw = curYlw;
-
-    vTaskDelay(pdMS_TO_TICKS(20)); // Anti-rebond via délai court
+#if SANS_MUTEX == 0
+    // xSemaphoreGive() : rend le verrou — la prochaine tâche en attente peut continuer
+    xSemaphoreGive(mutexSerial);
   }
+#endif
 }
 
 // ---------------------------------------------------------------------------
-// tacheLeds() : reçoit les événements et pilote les LEDs
-// Consommateur — ne sait pas qui produit dans la queue
+// tacheA() et tacheB() : deux tâches qui écrivent sur Serial simultanément
+// Elles ont la même priorité et tournent sur le même cœur → préemption possible
 // ---------------------------------------------------------------------------
-void tacheLeds(void *param)
+void tacheA(void *param)
 {
-  pinMode(LED_GRN, OUTPUT);
-  pinMode(LED_YLW, OUTPUT);
-
-  bool etatGrn = false;
-  bool etatYlw = false;
-
-  BoutonEvent evt;
-
+  int compteur = 0;
   while (true)
   {
-    // xQueueReceive() attend qu'un message arrive dans la queue
-    // portMAX_DELAY = attend indéfiniment (la tâche dort jusqu'à réception)
-    // → pas de CPU consommé pendant l'attente, contrairement à un polling
-    if (xQueueReceive(queueBoutons, &evt, portMAX_DELAY) == pdTRUE)
-    {
-      switch (evt)
-      {
-        case EVT_BTN_GRN:
-          etatGrn = !etatGrn;
-          digitalWrite(LED_GRN, etatGrn);
-          Serial.println(etatGrn ? "LED verte  → ON" : "LED verte  → OFF");
-          break;
+    ecrireSerial("Tache-A", compteur++);
+    vTaskDelay(pdMS_TO_TICKS(300));
+  }
+}
 
-        case EVT_BTN_YLW:
-          etatYlw = !etatYlw;
-          digitalWrite(LED_YLW, etatYlw);
-          Serial.println(etatYlw ? "LED jaune  → ON" : "LED jaune  → OFF");
-          break;
-      }
-    }
+void tacheB(void *param)
+{
+  int compteur = 0;
+  while (true)
+  {
+    ecrireSerial("Tache-B", compteur++);
+    vTaskDelay(pdMS_TO_TICKS(300));
   }
 }
 
@@ -125,24 +90,27 @@ void setup()
 {
   Serial.begin(115200);
 
-  // Crée la queue AVANT de créer les tâches qui vont l'utiliser
-  // Paramètres :
-  //   longueur  → nombre max de messages en attente (ici 10)
-  //   taille    → taille d'un message en bytes (sizeof notre enum)
-  queueBoutons = xQueueCreate(10, sizeof(BoutonEvent));
+#if SANS_MUTEX == 1
+  Serial.println("=== MODE SANS MUTEX — observe le texte corrompu ===");
+  Serial.println("Change SANS_MUTEX à 0 et recompile pour voir la différence.");
+#else
+  Serial.println("=== MODE AVEC MUTEX — les messages sont propres ===");
+#endif
 
-  if (queueBoutons == NULL)
+  // Crée le mutex AVANT les tâches
+  // xSemaphoreCreateMutex() retourne NULL si plus de mémoire disponible
+  mutexSerial = xSemaphoreCreateMutex();
+
+  if (mutexSerial == NULL)
   {
-    Serial.println("ERREUR : impossible de créer la queue !");
+    Serial.println("ERREUR : impossible de créer le mutex !");
     return;
   }
 
-  xTaskCreatePinnedToCore(tacheBoutons, "Boutons", 2048, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(tacheLeds,    "LEDs",    2048, NULL, 1, NULL, 0);
-  // Boutons a une priorité plus haute (2) que LEDs (1)
-  // → garantit que la détection d'appui n'est jamais retardée par la tâche LED
-
-  Serial.println("Queue créée — appuie sur les boutons !");
+  // Même cœur (0) et même priorité (1) → FreeRTOS les préempte l'une l'autre
+  // C'est volontaire : maximise les chances de race condition sans mutex
+  xTaskCreatePinnedToCore(tacheA, "Tache-A", 2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(tacheB, "Tache-B", 2048, NULL, 1, NULL, 0);
 }
 
 void loop()
