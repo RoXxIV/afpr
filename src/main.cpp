@@ -32,8 +32,8 @@ struct BatterieSim
 BatterieSim bancs[NB_BANCS];
 
 unsigned long lastPublish    = 0;
-unsigned long lastMqttRetry  = 0;
 #define MQTT_RETRY_MS 5000UL
+unsigned long lastMqttRetry  = (unsigned long)-MQTT_RETRY_MS;
 
 // ---------------------------------------------------------------------------
 // initBancs()
@@ -161,13 +161,14 @@ void setup()
     WiFi.begin(ssid, password);
     Serial.print("Connexion WiFi");
     while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+    WiFi.setSleep(false);
     Serial.println("\nWiFi connecté – IP : " + WiFi.localIP().toString());
 
     client.setServer(mqttBroker, mqttPort);
     client.setKeepAlive(60);
 
     initBancs();
-    connectMQTT(0);
+    connectMQTT(millis());
 }
 
 // ---------------------------------------------------------------------------
