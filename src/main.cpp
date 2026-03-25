@@ -1,79 +1,120 @@
-// Module 5 - Step 8 : Multi-fichier C++
+// Module 5 - Step 9 : Multi-page UI avec navigation
 //
-// Jusqu'ici tout le code tenait dans main.cpp.
-// Sur un vrai projet, c'est ingérable : 500, 1000, 2000 lignes dans un seul fichier.
+// Ce step assemble les 3 modules créés dans lib/ :
+//   ButtonManager  → détecte les appuis boutons
+//   DisplayManager → pilote le LCD
+//   MenuManager    → gère les pages et la navigation
 //
-// La solution : découper en modules indépendants, chacun dans son propre dossier.
 // C'est exactement l'architecture du vrai projet :
+//   ButtonManager → MenuManager → DisplayManager
 //
-//   lib/DisplayManager/DisplayManager.h + .cpp
-//   lib/MenuManager/MenuManager.h + .cpp
-//   lib/BatteryLogic/BatteryLogic.h + .cpp
-//   ...
+// Navigation :
+//   BTN JAUNE (19) → page suivante
+//   BTN ROUGE (18) → page précédente
 //
-// Ce step crée un premier module : LedManager
-//   lib/LedManager/LedManager.h   → déclaration (quoi)
-//   lib/LedManager/LedManager.cpp → implémentation (comment)
-//
-// PlatformIO découvre automatiquement les fichiers dans lib/ — pas de config à faire.
-//
-// Ouvre lib/LedManager/LedManager.h et LedManager.cpp avant de lire ce fichier.
+// 3 pages :
+//   Page 1 — Accueil   : nom + numéro de page
+//   Page 2 — Capteurs  : température et SOC simulés
+//   Page 3 — Système   : uptime en secondes
 
 #include <Arduino.h>
-#include <LedManager.h>  // PlatformIO cherche dans lib/ automatiquement
+#include <ButtonManager.h>
+#include <DisplayManager.h>
+#include <MenuManager.h>
 
-#define BTN_GRN 16
-#define BTN_YLW 19
+// --- Données partagées entre les pages ---
+// Dans le vrai projet c'est SharedData protégé par mutex (step-6)
+struct AppData
+{
+  float temperature;
+  int   soc;
+};
 
-// Instanciation : crée un objet LedManager pour chaque LED
-// On passe le GPIO au constructeur — comme new LedManager(pin) en JS
-LedManager ledVerte(2);
-LedManager ledJaune(4);
+AppData appData = {24.5, 78};
 
-bool btnGrnPrev = HIGH;
-bool btnYlwPrev = HIGH;
+// --- Objets ---
+DisplayManager display(0x27, 16, 2);
+MenuManager    menu(display);
+ButtonManager  btnNext(19); // BTN JAUNE → page suivante
+ButtonManager  btnPrev(18); // BTN ROUGE → page précédente
 
+// ===========================================================================
+// Définition des pages
+//
+// Chaque page est une fonction qui reçoit le display et ses données.
+// Elle est responsable de son propre affichage — MenuManager ne sait pas
+// ce qu'elle affiche, il sait juste quand l'appeler.
+// ===========================================================================
+
+void pageAccueil(DisplayManager &d, void *data)
+{
+  d.printScreen("=== Accueil ===", "BTN: nav pages");
+}
+
+void pageCapteurs(DisplayManager &d, void *data)
+{
+  AppData *ad = (AppData *)data; // Cast du void* vers le vrai type
+
+  String l0 = "T: " + String(ad->temperature, 1) + "C";
+  String l1 = "SOC: " + String(ad->soc) + "%";
+  d.printScreen(l0, l1);
+}
+
+void pageSysteme(DisplayManager &d, void *data)
+{
+  unsigned long uptime = millis() / 1000;
+  String l0 = "Uptime (s):";
+  String l1 = String(uptime);
+  d.printScreen(l0, l1);
+}
+
+// ===========================================================================
+// setup()
+// ===========================================================================
 void setup()
 {
   Serial.begin(115200);
-  pinMode(BTN_GRN, INPUT_PULLUP);
-  pinMode(BTN_YLW, INPUT_PULLUP);
 
-  // begin() initialise le GPIO — séparé du constructeur car pinMode()
-  // ne peut pas être appelé avant que le framework Arduino soit initialisé
-  ledVerte.begin();
-  ledJaune.begin();
+  display.begin();
+  btnNext.begin();
+  btnPrev.begin();
 
-  // Clignote 3 fois au démarrage pour signaler que tout est prêt
-  ledVerte.blink(3, 100);
+  // Enregistrement des pages dans l'ordre d'affichage
+  // Le void* permet de passer les données spécifiques à chaque page
+  menu.addPage(pageAccueil,  nullptr);  // pas de données nécessaires
+  menu.addPage(pageCapteurs, &appData); // passe un pointeur vers appData
+  menu.addPage(pageSysteme,  nullptr);
 
-  Serial.println("LedManager prêt !");
-  Serial.println("BTN VERT  → toggle LED verte");
-  Serial.println("BTN JAUNE → toggle LED jaune + état dans Serial");
+  // Affichage initial
+  menu.refresh();
+
+  Serial.println("UI prête — BTN JAUNE: suivant, BTN ROUGE: précédent");
 }
 
+// ===========================================================================
+// loop()
+// ===========================================================================
 void loop()
 {
-  bool btnGrn = digitalRead(BTN_GRN);
-  bool btnYlw = digitalRead(BTN_YLW);
+  // Lecture des boutons
+  if (btnNext.pressed()) menu.next();
+  if (btnPrev.pressed()) menu.prev();
 
-  if (btnGrnPrev == HIGH && btnGrn == LOW)
+  // Simulation de variation des capteurs toutes les 2s
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate > 2000)
   {
-    ledVerte.toggle();
-    delay(50);
+    lastUpdate = millis();
+    appData.temperature += random(-5, 6) / 10.0;
+    appData.temperature  = constrain(appData.temperature, 20.0, 40.0);
+    appData.soc         += random(-1, 2);
+    appData.soc          = constrain(appData.soc, 0, 100);
+
+    // Force le redessinage si on est sur la page capteurs
+    // → les données ont changé, il faut rafraîchir l'affichage
+    if (menu.currentPage() == 1)
+      menu.markDirty();
   }
 
-  if (btnYlwPrev == HIGH && btnYlw == LOW)
-  {
-    ledJaune.toggle();
-
-    // isOn() : accès à l'état sans toucher directement à la variable interne
-    // → c'est l'encapsulation — main.cpp ne connaît pas _state, il demande à l'objet
-    Serial.print("LED jaune : ");
-    Serial.println(ledJaune.isOn() ? "ON" : "OFF");
-    delay(50);
-  }
-
-  btnGrnPrev = btnGrn;
-  btnYlwPrev = btnYlw;
+  menu.refresh();
 }
