@@ -21,6 +21,7 @@
 #include <ButtonManager.h>
 #include <DisplayManager.h>
 #include <MenuManager.h>
+#include <config.h>
 
 // --- Données partagées entre les pages ---
 // Dans le vrai projet c'est SharedData protégé par mutex (step-6)
@@ -35,8 +36,8 @@ AppData appData = {24.5, 78};
 // --- Objets ---
 DisplayManager display(0x27, 16, 2);
 MenuManager    menu(display);
-ButtonManager  btnNext(19); // BTN JAUNE → page suivante
-ButtonManager  btnPrev(18); // BTN ROUGE → page précédente
+ButtonManager  btnNext(BTN_NEXT); // BTN JAUNE → page suivante
+ButtonManager  btnPrev(BTN_PREV); // BTN ROUGE → page précédente
 
 // ===========================================================================
 // Définition des pages
