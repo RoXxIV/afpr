@@ -62,15 +62,10 @@ void setup()
 
   // --- Initialisation du watchdog ---
   //
-  // esp_task_wdt_config_t définit le comportement du watchdog :
-  //   timeout_ms   → délai avant reset si le chien n'est pas nourri
-  //   trigger_panic → true = génère un panic avant le reset (plus de logs)
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms     = WDT_TIMEOUT_S * 1000,
-    .idle_core_mask = 0,
-    .trigger_panic  = false  // false = reset direct, true = panic + stack trace
-  };
-  esp_task_wdt_reconfigure(&wdt_config);
+  // esp_task_wdt_init() configure le watchdog (API ESP-IDF v4)
+  //   timeout en secondes
+  //   false = reset direct sans panic
+  esp_task_wdt_init(WDT_TIMEOUT_S, false);
 
   // Enregistre la tâche courante (loop) auprès du watchdog
   // À partir de maintenant, cette tâche DOIT appeler esp_task_wdt_reset()
