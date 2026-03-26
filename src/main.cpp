@@ -16,22 +16,41 @@
 //                                                    <──read── [Tâche MQTT]
 //
 //   Chaque tâche nourrit le watchdog — si l'une freeze, l'ESP32 reboot.
+//
+// ---------------------------------------------------------------------------
+// Commandes Mosquitto (remplace X par l'IP de ton broker)
+//
+// S'abonner à tous les topics du device :
+//   mosquitto_sub -h 192.168.1.X -t "device/#" -v
+//
+// S'abonner à un topic spécifique :
+//   mosquitto_sub -h 192.168.1.X -t "device/temperature" -v
+//   mosquitto_sub -h 192.168.1.X -t "device/soc" -v
+//
+// Publier manuellement (pour tester) :
+//   mosquitto_pub -h 192.168.1.X -t "device/temperature" -m "23.5"
+// ---------------------------------------------------------------------------
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <LiquidCrystal_I2C.h>
 #include <esp_task_wdt.h>
+#include <DHT.h>
 
 // --- Config ---
-const char *ssid       = "NovaHome";
-const char *password   = "nova1234";
-const char *mqttBroker = "192.168.1.80";
+const char *ssid = "YOUR_SSID";
+const char *password = "YOUR_PASSWORD";
+const char *mqttBroker = "192.168.1.X";
 #define WDT_TIMEOUT_S 10
 
 // --- GPIO ---
 #define BTN_GRN 16
 #define LED_GRN 2
+#define DHT_PIN 4
+#define POT_PIN 34
+
+DHT dht(DHT_PIN, DHT11);
 
 // ===========================================================================
 // SharedData : structure de données partagée entre toutes les tâches
@@ -43,47 +62,44 @@ const char *mqttBroker = "192.168.1.80";
 // ===========================================================================
 struct SharedData
 {
-  float    temperature;   // °C simulée
-  int      soc;           // State of Charge simulé (%)
-  bool     ledState;      // état de la LED (piloté par bouton)
-  uint32_t lastUpdate;    // timestamp de la dernière mise à jour capteur
+  float temperature;   // °C — lu depuis DHT11
+  int soc;             // State of Charge (%) — lu depuis potentiomètre
+  bool ledState;       // état de la LED (piloté par bouton)
+  uint32_t lastUpdate; // timestamp de la dernière mise à jour capteur
 };
 
-SharedData      data;
+SharedData data;
 SemaphoreHandle_t mutexData;
 
 // --- Objets réseau ---
-WiFiClient   wifiClient;
+WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 // ===========================================================================
-// Tâche Sensors : simule la lecture de capteurs et met à jour SharedData
-// Dans le vrai projet : lecture CAN bus, Modbus, ADC...
+// Tâche Sensors : lit le DHT11 (température) et le potentiomètre (SOC)
 // ===========================================================================
 void tacheSensors(void *param)
 {
-  esp_task_wdt_add(NULL); // Enregistre cette tâche auprès du watchdog
-
-  int soc = 50;
-  float temp = 25.0;
+  esp_task_wdt_add(NULL);
+  dht.begin();
 
   while (true)
   {
-    esp_task_wdt_reset(); // Nourrit le watchdog — prouve que la tâche est vivante
+    esp_task_wdt_reset();
 
-    // Simulation de variation capteurs
-    temp += (random(-10, 11)) / 10.0;
-    temp  = constrain(temp, 20.0, 45.0);
-    soc  += random(-1, 2);
-    soc   = constrain(soc, 0, 100);
+    float temp = dht.readTemperature();
+    int soc = map(analogRead(POT_PIN), 0, 4095, 100, 0); // ADC 12 bits → 100-0%
+
+    if (isnan(temp))
+      temp = -1; // lecture DHT échouée
 
     // Écriture dans SharedData → TOUJOURS sous mutex
     if (xSemaphoreTake(mutexData, pdMS_TO_TICKS(100)) == pdTRUE)
     {
       data.temperature = temp;
-      data.soc         = soc;
-      data.lastUpdate  = millis();
+      data.soc = soc;
+      data.lastUpdate = millis();
       xSemaphoreGive(mutexData);
     }
 
@@ -105,13 +121,13 @@ void tacheDisplay(void *param)
 
     // Lecture de SharedData → TOUJOURS sous mutex
     float temp;
-    int   soc;
-    bool  led;
+    int soc;
+    bool led;
     if (xSemaphoreTake(mutexData, pdMS_TO_TICKS(100)) == pdTRUE)
     {
       temp = data.temperature;
-      soc  = data.soc;
-      led  = data.ledState;
+      soc = data.soc;
+      led = data.ledState;
       xSemaphoreGive(mutexData);
     }
 
@@ -139,6 +155,7 @@ void tacheMQTT(void *param)
   esp_task_wdt_add(NULL);
 
   mqtt.setServer(mqttBroker, 1883);
+  mqtt.setSocketTimeout(5); // timeout TCP 5s < WDT 10s → le watchdog ne tire pas
 
   while (true)
   {
@@ -146,25 +163,39 @@ void tacheMQTT(void *param)
 
     if (!mqtt.connected())
     {
+      Serial.println("MQTT déconnecté — tentative de reconnexion...");
+      esp_task_wdt_reset(); // nourrit avant le connect bloquant (jusqu'à 5s)
       if (mqtt.connect("ESP32_freertos_step6"))
         Serial.println("MQTT connecté");
+      else
+      {
+        esp_task_wdt_reset(); // nourrit après l'échec, avant le délai d'attente
+        vTaskDelay(pdMS_TO_TICKS(5000));
+      }
     }
+
+    mqtt.loop(); // doit tourner à chaque itération, pas seulement si connecté
 
     if (mqtt.connected())
     {
       float temp;
-      int   soc;
+      int soc;
 
       if (xSemaphoreTake(mutexData, pdMS_TO_TICKS(100)) == pdTRUE)
       {
         temp = data.temperature;
-        soc  = data.soc;
+        soc = data.soc;
         xSemaphoreGive(mutexData);
       }
 
-      mqtt.publish("device/temperature", String(temp, 1).c_str());
-      mqtt.publish("device/soc",         String(soc).c_str());
-      mqtt.loop();
+      // Buffers locaux — durée de vie garantie jusqu'à la fin du publish
+      char bufTemp[10];
+      char bufSoc[6];
+      dtostrf(temp, 4, 1, bufTemp); // float → "23.5"
+      snprintf(bufSoc, sizeof(bufSoc), "%d", soc);
+
+      mqtt.publish("device/temperature", bufTemp);
+      mqtt.publish("device/soc", bufSoc);
     }
 
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -185,7 +216,7 @@ void tacheBouton(void *param)
   pinMode(LED_GRN, OUTPUT);
 
   bool prev = HIGH;
-  bool msg  = true;
+  bool msg = true;
 
   while (true)
   {
@@ -237,19 +268,15 @@ void setup()
 
   // WiFi — bloquant uniquement au démarrage, acceptable dans setup()
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  while (WiFi.status() != WL_CONNECTED)
+    delay(500);
   Serial.println("WiFi connecté");
 
-  // Watchdog global
-  esp_task_wdt_config_t wdt = {
-    .timeout_ms     = WDT_TIMEOUT_S * 1000,
-    .idle_core_mask = 0,
-    .trigger_panic  = false
-  };
-  esp_task_wdt_reconfigure(&wdt);
+  // Watchdog global (API ESP-IDF v4)
+  esp_task_wdt_init(WDT_TIMEOUT_S, false);
 
   // Initialisation des primitives FreeRTOS
-  mutexData   = xSemaphoreCreateMutex();
+  mutexData = xSemaphoreCreateMutex();
   queueBouton = xQueueCreate(5, sizeof(bool));
 
   // Initialisation de SharedData
@@ -259,9 +286,9 @@ void setup()
   //                              nom              stack   param prio  handle core
   xTaskCreatePinnedToCore(tacheSensors, "Sensors", 2048, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(tacheDisplay, "Display", 3072, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(tacheMQTT,   "MQTT",    4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(tacheBouton, "Bouton",  2048, NULL, 3, NULL, 0);
-  xTaskCreatePinnedToCore(tacheLed,    "LED",     2048, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(tacheMQTT, "MQTT", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(tacheBouton, "Bouton", 2048, NULL, 3, NULL, 0);
+  xTaskCreatePinnedToCore(tacheLed, "LED", 2048, NULL, 2, NULL, 0);
 
   Serial.println("Toutes les tâches démarrées.");
 }
