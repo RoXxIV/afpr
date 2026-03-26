@@ -15,20 +15,24 @@
 //   lib/LedManager/LedManager.h   → déclaration (quoi)
 //   lib/LedManager/LedManager.cpp → implémentation (comment)
 //
-// PlatformIO découvre automatiquement les fichiers dans lib/ — pas de config à faire.
+// Et introduit le fichier de config centralisé :
+//   include/config.h → tous les GPIO et constantes au même endroit
 //
-// Ouvre lib/LedManager/LedManager.h et LedManager.cpp avant de lire ce fichier.
+// PlatformIO découvre automatiquement :
+//   lib/      → bibliothèques locales
+//   include/  → headers partagés
+//
+// Ouvre include/config.h, lib/LedManager/LedManager.h et LedManager.cpp avant de lire ce fichier.
 
 #include <Arduino.h>
 #include <LedManager.h>  // PlatformIO cherche dans lib/ automatiquement
-
-#define BTN_GRN 16
-#define BTN_YLW 19
+#include <config.h>      // GPIO et constantes — PlatformIO cherche dans include/ automatiquement
 
 // Instanciation : crée un objet LedManager pour chaque LED
 // On passe le GPIO au constructeur — comme new LedManager(pin) en JS
-LedManager ledVerte(2);
-LedManager ledJaune(4);
+// Les pins viennent de config.h — main.cpp ne connaît pas les numéros de GPIO
+LedManager ledVerte(LED_GRN);
+LedManager ledJaune(LED_YLW);
 
 bool btnGrnPrev = HIGH;
 bool btnYlwPrev = HIGH;
